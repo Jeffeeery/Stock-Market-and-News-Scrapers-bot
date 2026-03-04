@@ -1,0 +1,33 @@
+name: Market Radar Bot
+
+# 触发条件
+on:
+  schedule:
+    # 每 15 分钟运行一次
+    - cron: '*/15 * * * *' 
+  workflow_dispatch: # 允许手动点击运行（测试用）
+
+jobs:
+  run-radar:
+    runs-on: ubuntu-latest 
+    
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v3
+        
+      - name: 配置 Python 环境
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+          
+      - name: 安装必需的库
+        run: |
+          pip install requests feedparser google-generativeai yfinance
+          
+      - name: 运行主程序
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        # 注意：这里已经替换成了你实际上传的 Python 文件名
+        run: python News-and-Stocks-Scrapers.py
