@@ -175,7 +175,7 @@ if __name__ == "__main__":
     
     emergency_monitor()
 
-    is_manual_trigger = os.environ.get('GITHUB_EVENT_NAME') == 'workflow_dispatch'
+    is_manual_trigger = os.environ.get('GITHUB_EVENT_NAME') in ['workflow_dispatch', 'repository_dispatch']
     utc_now = datetime.utcnow()
     kl_hour = (utc_now.hour + 8) % 24
     is_report_time = (kl_hour % 4 == 0) and (utc_now.minute < 30)
@@ -188,5 +188,6 @@ if __name__ == "__main__":
         routine_report()
     else:
         print(f"➖ 当前马来西亚时间 {kl_hour} 点 {utc_now.minute} 分，任务静默结束。")
+
 
 
