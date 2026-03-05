@@ -6,6 +6,7 @@ import feedparser
 import yfinance as yf
 import google.generativeai as genai
 from datetime import datetime
+from upstash_redis import Redis
 
 # ==========================================
 # 1. 密钥加载 (新增了 Upstash 数据库密钥)
@@ -188,3 +189,4 @@ if __name__ == "__main__":
         routine_report()
     else:
         print(f"➖ 当前马来西亚时间 {kl_hour} 点 {utc_now.minute} 分，任务静默结束。")
+
