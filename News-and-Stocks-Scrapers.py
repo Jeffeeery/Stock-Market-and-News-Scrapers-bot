@@ -157,8 +157,8 @@ def emergency_monitor():
             if not GEMINI_KEY: continue
             
             # 只有全新的爆炸性新闻，才会送到 AI 这里做最终测谎
-            model = genai.GenerativeModel('gemini-1.5-flash-latest')
-            prompt = f"判断该新闻是否陈述了真实的、已发生的、对全球有毁灭打击的事件。必须输出JSON: {{\"is_critical\": true/false, \"reason\": \"...\"}}。标题：{article.title}"
+            model = genai.GenerativeModel('gemini-2.5-flash')
+            prompt = f"判断该新闻是否陈述了真实的、发生的、对全球有毁灭打击的事件。必须输出JSON: {{\"is_critical\": true/false, \"reason\": \"...\"}}。标题：{article.title}"
             try:
                 resp = model.generate_content(prompt)
                 res = json.loads(resp.text.strip().strip('`').replace('json\n', ''))
@@ -188,6 +188,7 @@ if __name__ == "__main__":
         routine_report()
     else:
         print(f"➖ 当前马来西亚时间 {kl_hour} 点 {utc_now.minute} 分，任务静默结束。")
+
 
 
 
