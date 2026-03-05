@@ -19,18 +19,28 @@ if GEMINI_KEY:
 TICKERS = {'CL=F': '原油(WTI)', 'GC=F': '黄金', 'SI=F': '白银', 'MAGS': '科技七巨头', 'BTC-USD': '比特币', '^VIX': '恐慌指数'}
 
 # ==========================================
-# 2. 基础通信组件
+# 2. 基础通信组件 (增强了报错溯源)
 # ==========================================
 def send_telegram(message):
     if not TOKEN or not CHAT_ID:
-        print("未检测到 Telegram 密钥。")
+        print("❌ 致命错误：未检测到 Telegram 密钥 (TOKEN 或 CHAT_ID 为空)。请检查 GitHub Secrets！")
         return
+    
     url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
     payload = {"chat_id": CHAT_ID, "text": message, "parse_mode": "HTML", "disable_web_page_preview": True}
-    requests.post(url, json=payload)
+    
+    try:
+        response = requests.post(url, json=payload)
+        # 如果 Telegram 拒绝发送，强制把拒绝理由打印到日志里！
+        if response.status_code != 200:
+            print(f"❌ Telegram 发送失败！错误码: {response.status_code}, 详情: {response.text}")
+        else:
+            print("✅ 消息已成功推送到 Telegram！")
+    except Exception as e:
+        print(f"❌ 网络请求崩溃: {e}")
 
 # ==========================================
-# 3. 轨道一：常规长篇简报 (价格对比昨日收盘)
+# 3. 轨道一：常规长篇简报
 # ==========================================
 def routine_report():
     print("\n📝 正在生成常规市场简报...")
@@ -38,7 +48,6 @@ def routine_report():
 
     for symbol, name in TICKERS.items():
         try:
-            # Serverless 没有本地内存，所以我们直接拉取 5 天历史，对比倒数第一天(今天)和倒数第二天(昨天)
             hist = yf.Ticker(symbol).history(period="5d")
             if len(hist) >= 2:
                 prev_close = hist['Close'].iloc[-2]
@@ -60,10 +69,9 @@ def routine_report():
         msg += "获取新闻失败。\n"
 
     send_telegram(msg)
-    print("✅ 常规报告已发送！")
 
 # ==========================================
-# 4. 轨道二：高频紧急预警 (AI 核查)
+# 4. 轨道二：高频紧急预警
 # ==========================================
 def emergency_monitor():
     print("\n🚨 正在执行紧急暴雷扫描...")
@@ -88,7 +96,6 @@ def emergency_monitor():
     if alerts:
         send_telegram("\n".join(alerts))
 
-    # AI 新闻核查
     url = "https://news.google.com/rss/search?q=US+Iran+conflict&hl=en-US&gl=US"
     feed = feedparser.parse(url)
     extreme_keywords = ["nuclear", "assassinated", "war", "strike", "missile"]
@@ -113,26 +120,20 @@ def emergency_monitor():
 if __name__ == "__main__":
     print("🚀 云端雷达启动...")
     
-    # 第一步：无论如何，先查有没有天塌下来的大事
     emergency_monitor()
 
-    # 第二步：情境感知，判断是否该发送长篇常规报告
-    
-    # 检查是否是你手动点击了 "Run workflow" 按钮
     is_manual_trigger = os.environ.get('GITHUB_EVENT_NAME') == 'workflow_dispatch'
-    
-    # 获取马来西亚当前时间 (UTC+8)
     utc_now = datetime.utcnow()
     kl_hour = (utc_now.hour + 8) % 24
     
-    # 如果时间刚好是 0点, 4点, 8点, 12点, 16点, 20点，且是该小时的前 15 分钟内
-    is_report_time = (kl_hour % 4 == 0) and (utc_now.minute < 15)
+    # 【修复重点】：容错时间扩大到 30 分钟！即使 GitHub 拖堂也能兼容
+    is_report_time = (kl_hour % 4 == 0) and (utc_now.minute < 30)
 
     if is_manual_trigger:
         print("👆 检测到手动触发，立即发送完整报告。")
         routine_report()
     elif is_report_time:
-        print(f"⏰ 当前时间符合 4 小时巡逻周期 (马来西亚时间 {kl_hour} 点)，发送完整报告。")
+        print(f"⏰ 当前马来西亚时间 {kl_hour} 点，符合发送周期！")
         routine_report()
     else:
-        print("➖ 当前不是发送长报告的时间，且盘面无暴雷，任务静默结束。")
+        print(f"➖ 当前马来西亚时间 {kl_hour} 点 {utc_now.minute} 分，不是发送长报告的时段，任务静默结束。")
