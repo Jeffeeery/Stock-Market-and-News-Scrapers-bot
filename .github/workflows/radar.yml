@@ -3,9 +3,10 @@ name: Market Radar Bot
 # 触发条件
 on:
   schedule:
-    # 每 15 分钟运行一次
-    - cron: '*/15 * * * *' 
-  workflow_dispatch: # 允许手动点击运行（测试用）
+    - cron: '*/15 * * * *' # 保留原来的破闹钟作为备胎兜底
+  workflow_dispatch:
+  repository_dispatch: # 允许外部 Webhook 拿着暗号来敲门
+    types: [precision-strike] # 我们定一个专属暗号
 
 jobs:
   run-radar:
