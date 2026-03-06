@@ -23,7 +23,7 @@ jobs:
           
       - name: 安装必需的库
         run: |
-          pip install requests feedparser google-generativeai yfinance
+          pip install requests feedparser google-genai yfinance
           
       - name: 运行主程序
         env:
