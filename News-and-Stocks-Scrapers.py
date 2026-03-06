@@ -56,7 +56,7 @@ def check_and_mark_news_seen(news_url):
         return False
 
 # ==========================================
-# 3. 轨道一：常规长篇简报 (带 AI 量化情绪打分)
+# 3. 轨道一：常规长篇简报 (双频道 + AI 量化情绪打分)
 # ==========================================
 def routine_report():
     print("\n📝 正在生成常规市场简报与情绪量化分析...")
@@ -78,42 +78,54 @@ def routine_report():
             pass
     msg += "\n"
 
-    # --- 抓取新闻并进行 AI 情绪打分 ---
+    # --- 抓取双频道新闻并进行 AI 情绪打分 ---
     try:
-        url = "https://news.google.com/rss/search?q=US+Iran+conflict&hl=en-US&gl=US"
-        feed = feedparser.parse(url)
+        # 📡 我们架设两根天线：一根听中东，一根听华尔街
+        rss_feeds = {
+            "🌍 宏观地缘": "https://news.google.com/rss/search?q=Middle+East+conflict+OR+US+Iran+war&hl=en-US&gl=US",
+            "🏦 华尔街/美联储": "https://news.google.com/rss/search?q=Wall+Street+OR+Federal+Reserve+OR+Stock+Market&hl=en-US&gl=US"
+        }
         
         new_articles = []
-        for article in feed.entries[:15]: 
-            if len(new_articles) >= 5: break 
-            if not check_and_mark_news_seen(article.link):
-                new_articles.append(article)
+        news_text_for_ai = ""
+        news_display_msg = ""
+
+        # 遍历我们的两个频道
+        for category, url in rss_feeds.items():
+            feed = feedparser.parse(url)
+            count = 0
+            for article in feed.entries:
+                if count >= 3: break # 每个频道最多只抓 3 条最新未读的，防止信息过载
+                
+                # 查数据库：如果没发过，才记录下来
+                if not check_and_mark_news_seen(article.link):
+                    new_articles.append(article)
+                    news_display_msg += f"<b>{category}</b>: <a href='{article.link}'>{article.title}</a>\n"
+                    news_text_for_ai += f"[{category}] {article.title}\n"
+                    count += 1
                 
         if not new_articles:
             msg += "➖ 过去 4 小时内无未读重大资讯，情绪指标维持现状。\n"
         else:
             msg += "📰 <b>【未读资讯与 AI 情绪研判】</b>\n"
-            news_text_for_ai = ""
-            for i, article in enumerate(new_articles):
-                msg += f"{i+1}. <a href='{article.link}'>{article.title}</a>\n"
-                news_text_for_ai += f"- {article.title}\n"
+            msg += news_display_msg
             
             # 🚀 召唤大模型进行量化分析！
             if ai_client:
                 prompt = f"""
-                你是一个顶级的华尔街宏观分析师。请阅读以下关于中东/全球局势的最新新闻标题，并评估其对全球市场（原油、科技股、避险资产）的潜在情绪影响。
+                你是一个顶级的华尔街宏观分析师。请阅读以下最新的【地缘政治】与【华尔街金融】新闻标题。
+                请评估它们对全球市场（股市、原油、加密货币等）的综合情绪影响。
                 请严格以 JSON 格式输出，不要有任何其他文字：
                 {{
-                    "score": 填入一个 -100 到 100 的整数（-100代表极度恐慌/爆发战争，0代表中性，100代表极度和平乐观）,
+                    "score": 填入一个 -100 到 100 的整数（-100代表极其恐慌/崩盘，0代表中性，100代表极其乐观/大牛市）,
                     "trend": "看空" 或 "震荡" 或 "看多",
-                    "analysis": "用50个字以内，极其犀利、专业地总结这几条新闻对大盘潜藏的利好或利空逻辑"
+                    "analysis": "用50个字以内，极其犀利、专业地总结这些资金面和消息面资讯对大盘的利好或利空逻辑"
                 }}
                 
                 新闻标题：
                 {news_text_for_ai}
                 """
                 
-                # 【新版 SDK 调用方式】：强制要求返回干净的 JSON
                 resp = ai_client.models.generate_content(
                     model='gemini-2.5-flash',
                     contents=prompt,
@@ -196,3 +208,4 @@ if __name__ == "__main__":
         routine_report()
     else:
         print(f"➖ 当前马来西亚时间 {kl_hour} 点 {utc_now.minute} 分，任务静默结束。")
+
