@@ -195,19 +195,21 @@ def emergency_monitor():
 # 5. 云端智能调度中心
 # ==========================================
 if __name__ == "__main__":
-    print("🚀 云端智能雷达 (v3.0 量化情绪版) 启动...")
+    print("🚀 云端智能雷达 (v3.1 架构分离版) 启动...")
     
+    # 无论谁唤醒，先静默扫描一遍有没有世界末日或熔断暴跌
     emergency_monitor()
 
-    is_manual_trigger = os.environ.get('GITHUB_EVENT_NAME') in ['workflow_dispatch', 'repository_dispatch']
-    utc_now = datetime.now(timezone.utc)
-    kl_hour = (utc_now.hour + 8) % 24
-    is_report_time = (kl_hour % 4 == 0) and (utc_now.minute < 30)
+    # 判断唤醒来源：是不是手动点击的，或者是 cron-job.org 打来的专线电话？
+    event_name = os.environ.get('GITHUB_EVENT_NAME')
+    is_vip_trigger = event_name in ['workflow_dispatch', 'repository_dispatch']
 
-    if is_manual_trigger or is_report_time:
+    if is_vip_trigger:
+        print("👆 检测到 VIP 专线或手动触发，立即生成长篇情绪简报！")
         routine_report()
     else:
-        print(f"➖ 当前马来西亚时间 {kl_hour} 点 {utc_now.minute} 分，任务静默结束。")
+        print("➖ 15分钟常规巡逻结束。未触发报警，系统静默待命。")
+
 
 
 
