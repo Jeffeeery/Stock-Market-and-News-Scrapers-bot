@@ -4,11 +4,12 @@ import hashlib
 import requests
 import feedparser
 import yfinance as yf
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 from datetime import datetime
 
 # ==========================================
-# 1. 密钥加载 (新增了 Upstash 数据库密钥)
+# 1. 密钥加载与全新 AI 客户端初始化
 # ==========================================
 TOKEN = os.environ.get("TELEGRAM_TOKEN")
 CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
@@ -16,13 +17,13 @@ GEMINI_KEY = os.environ.get("GEMINI_API_KEY")
 UPSTASH_URL = os.environ.get("UPSTASH_REDIS_REST_URL")
 UPSTASH_TOKEN = os.environ.get("UPSTASH_REDIS_REST_TOKEN")
 
-if GEMINI_KEY:
-    genai.configure(api_key=GEMINI_KEY)
+# 【新版 SDK 核心改动】：使用 Client 架构
+ai_client = genai.Client(api_key=GEMINI_KEY) if GEMINI_KEY else None
 
 TICKERS = {'CL=F': '原油(WTI)', 'GC=F': '黄金', 'SI=F': '白银', 'MAGS': '科技七巨头', 'BTC-USD': '比特币', '^VIX': '恐慌指数'}
 
 # ==========================================
-# 2. 基础通信与【数据库防重组件】
+# 2. 基础通信与数据库防重组件
 # ==========================================
 def send_telegram(message):
     if not TOKEN or not CHAT_ID:
@@ -40,42 +41,29 @@ def send_telegram(message):
         print(f"❌ 网络异常: {e}")
 
 def check_and_mark_news_seen(news_url):
-    """
-    核心记忆引擎：检查一条新闻是否处理过。
-    如果没处理过，返回 False，并在数据库里登记（保存7天）。
-    """
     if not UPSTASH_URL or not UPSTASH_TOKEN:
-        print("⚠️ 未配置 Upstash 数据库，防重机制未启用，默认全部放行。")
-        return False # 如果没配数据库，就按老规矩办，不拦截
-
-    # 将长长的网址压缩成 32 位的 MD5 短指纹
+        return False 
     url_fingerprint = hashlib.md5(news_url.encode('utf-8')).hexdigest()
     headers = {"Authorization": f"Bearer {UPSTASH_TOKEN}"}
-    
     try:
-        # 1. 查询数据库：你有这个指纹吗？
         check_url = f"{UPSTASH_URL}/get/{url_fingerprint}"
-        resp = requests.get(check_url, headers=headers).json()
-        
-        if resp.get('result') is not None:
-            return True # 数据库里有，说明发过了
-            
-        # 2. 没发过：登记指纹，设定过期时间 EX 604800 (7天)
+        if requests.get(check_url, headers=headers).json().get('result') is not None:
+            return True 
         save_url = f"{UPSTASH_URL}/set/{url_fingerprint}/1/EX/604800"
         requests.get(save_url, headers=headers)
-        return False # 告诉主程序：这是一条新新闻！
-        
-    except Exception as e:
-        print(f"❌ 数据库请求异常: {e}")
-        return False # 数据库出错时，宁可错发也不漏发
+        return False 
+    except:
+        return False
 
 # ==========================================
-# 3. 轨道一：常规长篇简报 (带防重机制)
+# 3. 轨道一：常规长篇简报 (带 AI 量化情绪打分)
 # ==========================================
 def routine_report():
-    print("\n📝 正在生成常规市场简报...")
-    msg = "📊 <b>【市场常规巡逻报告】</b>\n\n"
+    print("\n📝 正在生成常规市场简报与情绪量化分析...")
+    msg = "📊 <b>【市场情绪与盘面巡逻报告】</b>\n\n"
 
+    # --- 获取盘面数据 ---
+    msg += "📈 <b>【全球核心资产跟踪】</b>\n"
     for symbol, name in TICKERS.items():
         try:
             hist = yf.Ticker(symbol).history(period="5d")
@@ -85,93 +73,117 @@ def routine_report():
                 diff_val = current_price - prev_close
                 diff_pct = (diff_val / prev_close) * 100
                 trend = "🟢" if diff_val > 0 else "🔴"
-                msg += f"<b>{name}</b>:\n当前: {current_price:.2f} | 相比昨日: {trend}{diff_val:+.2f} ({diff_pct:+.2f}%)\n\n"
-        except Exception:
-            msg += f"<b>{name}</b>: 获取数据失败\n\n"
+                msg += f"• <b>{name}</b>: {current_price:.2f} | {trend}{diff_pct:+.2f}%\n"
+        except:
+            pass
+    msg += "\n"
 
-    msg += "📰 <b>【最新重大未读资讯】</b>\n"
+    # --- 抓取新闻并进行 AI 情绪打分 ---
     try:
         url = "https://news.google.com/rss/search?q=US+Iran+conflict&hl=en-US&gl=US"
         feed = feedparser.parse(url)
         
-        new_news_count = 0
-        for article in feed.entries[:10]: # 往前多看几条，防止前面都是发过的
-            if new_news_count >= 5: break # 每次最多只推送5条新的
-            
-            # 【防重拦截】如果发过了，直接跳过
-            if check_and_mark_news_seen(article.link):
-                continue
+        new_articles = []
+        for article in feed.entries[:15]: 
+            if len(new_articles) >= 5: break 
+            if not check_and_mark_news_seen(article.link):
+                new_articles.append(article)
                 
-            new_news_count += 1
-            msg += f"{new_news_count}. <a href='{article.link}'>{article.title}</a>\n"
+        if not new_articles:
+            msg += "➖ 过去 4 小时内无未读重大资讯，情绪指标维持现状。\n"
+        else:
+            msg += "📰 <b>【未读资讯与 AI 情绪研判】</b>\n"
+            news_text_for_ai = ""
+            for i, article in enumerate(new_articles):
+                msg += f"{i+1}. <a href='{article.link}'>{article.title}</a>\n"
+                news_text_for_ai += f"- {article.title}\n"
             
-        if new_news_count == 0:
-            msg += "➖ 过去 4 小时内无未读新资讯。\n"
-            
-    except Exception:
-        msg += "获取新闻失败。\n"
+            # 🚀 召唤大模型进行量化分析！
+            if ai_client:
+                prompt = f"""
+                你是一个顶级的华尔街宏观分析师。请阅读以下关于中东/全球局势的最新新闻标题，并评估其对全球市场（原油、科技股、避险资产）的潜在情绪影响。
+                请严格以 JSON 格式输出，不要有任何其他文字：
+                {{
+                    "score": 填入一个 -100 到 100 的整数（-100代表极度恐慌/爆发战争，0代表中性，100代表极度和平乐观）,
+                    "trend": "看空" 或 "震荡" 或 "看多",
+                    "analysis": "用50个字以内，极其犀利、专业地总结这几条新闻对大盘潜藏的利好或利空逻辑"
+                }}
+                
+                新闻标题：
+                {news_text_for_ai}
+                """
+                
+                # 【新版 SDK 调用方式】：强制要求返回干净的 JSON
+                resp = ai_client.models.generate_content(
+                    model='gemini-2.5-flash',
+                    contents=prompt,
+                    config=types.GenerateContentConfig(
+                        response_mime_type="application/json",
+                    ),
+                )
+                
+                ai_result = json.loads(resp.text)
+                score = ai_result.get('score', 0)
+                emoji = "🥶" if score < -30 else ("🔥" if score > 30 else "🤔")
+                
+                msg += f"\n🧠 <b>AI 量化情绪得分</b>: {score} {emoji} (趋势: {ai_result.get('trend')})\n"
+                msg += f"💡 <b>核心研判</b>: {ai_result.get('analysis')}\n"
+
+    except Exception as e:
+        print(f"AI 或新闻获取异常: {e}")
+        msg += "获取新闻或分析失败。\n"
 
     send_telegram(msg)
 
 # ==========================================
-# 4. 轨道二：高频紧急预警 (AI 核查前置阻拦)
+# 4. 轨道二：高频紧急预警 (新版 AI 调用)
 # ==========================================
 def emergency_monitor():
     print("\n🚨 正在执行紧急暴雷扫描...")
     alerts = []
     
-    # --- 1. 扫描盘面暴跌 ---
     for symbol, name in TICKERS.items():
         try:
             hist = yf.Ticker(symbol).history(period="5d")
             if len(hist) >= 2:
-                prev_close = hist['Close'].iloc[-2]
                 current_price = hist['Close'].iloc[-1]
-                change_pct = ((current_price - prev_close) / prev_close) * 100
-                
+                change_pct = ((current_price - hist['Close'].iloc[-2]) / hist['Close'].iloc[-2]) * 100
                 if symbol == '^VIX' and current_price > 35:
                     alerts.append(f"🚨 <b>【极端恐慌】</b> VIX 突破 {current_price:.2f}！")
-                elif symbol == 'MAGS' and change_pct < -5.0:
-                    alerts.append(f"📉 <b>【美股熔断级下跌】</b> 科技巨头暴跌 {change_pct:.2f}%！")
                 elif symbol == 'CL=F' and change_pct > 8.0:
                     alerts.append(f"🛢️ <b>【原油暴涨】</b> 油价飙升 {change_pct:.2f}%！")
-        except Exception:
+        except:
             pass
     if alerts:
         send_telegram("\n".join(alerts))
 
-    # --- 2. 扫描突发核新闻 ---
     url = "https://news.google.com/rss/search?q=US+Iran+conflict&hl=en-US&gl=US"
-    feed = feedparser.parse(url)
     extreme_keywords = ["nuclear", "assassinated", "war", "strike", "missile"]
     
-    for article in feed.entries[:5]:
-        title_lower = article.title.lower()
-        if any(keyword in title_lower for keyword in extreme_keywords):
+    for article in feedparser.parse(url).entries[:5]:
+        if any(kw in article.title.lower() for kw in extreme_keywords):
+            if check_and_mark_news_seen(article.link): continue
+            if not ai_client: continue
             
-            # 【省钱大法】先查数据库！如果以前发过了，就不要去浪费 Gemini 的 API 额度了！
-            if check_and_mark_news_seen(article.link):
-                print(f"🛡️ 发现极端新闻，但数据库显示已处理过，拦截: {article.title}")
-                continue
-                
-            if not GEMINI_KEY: continue
-            
-            # 只有全新的爆炸性新闻，才会送到 AI 这里做最终测谎
-            model = genai.GenerativeModel('gemini-2.5-flash')
-            prompt = f"判断该新闻是否陈述了真实的、发生的、对全球有毁灭打击的事件。必须输出JSON: {{\"is_critical\": true/false, \"reason\": \"...\"}}。标题：{article.title}"
+            prompt = f"判断该新闻是否陈述了真实的、已发生的、对全球有毁灭打击的事件。必须输出JSON: {{\"is_critical\": true/false, \"reason\": \"...\"}}。标题：{article.title}"
             try:
-                resp = model.generate_content(prompt)
-                res = json.loads(resp.text.strip().strip('`').replace('json\n', ''))
+                # 【新版 SDK 调用方式】
+                resp = ai_client.models.generate_content(
+                    model='gemini-2.5-flash',
+                    contents=prompt,
+                    config=types.GenerateContentConfig(response_mime_type="application/json")
+                )
+                res = json.loads(resp.text)
                 if res.get("is_critical"):
                     send_telegram(f"☢️ <b>【高信度战争预警】</b>\n{article.title}\n<a href='{article.link}'>阅读原文</a>")
-            except Exception as e:
-                print(f"⚠️ AI 核查出错: {e}")
+            except:
+                pass
 
 # ==========================================
 # 5. 云端智能调度中心
 # ==========================================
 if __name__ == "__main__":
-    print("🚀 云端智能雷达 (v2.0 数据库版) 启动...")
+    print("🚀 云端智能雷达 (v3.0 量化情绪版) 启动...")
     
     emergency_monitor()
 
@@ -180,15 +192,7 @@ if __name__ == "__main__":
     kl_hour = (utc_now.hour + 8) % 24
     is_report_time = (kl_hour % 4 == 0) and (utc_now.minute < 30)
 
-    if is_manual_trigger:
-        print("👆 检测到手动触发，立即发送完整报告。")
-        routine_report()
-    elif is_report_time:
-        print(f"⏰ 当前马来西亚时间 {kl_hour} 点，符合发送周期！")
+    if is_manual_trigger or is_report_time:
         routine_report()
     else:
         print(f"➖ 当前马来西亚时间 {kl_hour} 点 {utc_now.minute} 分，任务静默结束。")
-
-
-
-
