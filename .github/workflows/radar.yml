@@ -33,5 +33,7 @@ jobs:
           UPSTASH_REDIS_REST_URL: ${{ secrets.UPSTASH_REDIS_REST_URL }}
           UPSTASH_REDIS_REST_TOKEN: ${{ secrets.UPSTASH_REDIS_REST_TOKEN }}
           WEBHOOK_EVENT: ${{ github.event.action }}
+          RAPIDAPI_KEY: ${{ secrets.RAPIDAPI_KEY }}
+          RAPIDAPI_HOST: ${{ secrets.RAPIDAPI_HOST }}
         # 注意：这里已经替换成了你实际上传的 Python 文件名
         run: python News-and-Stocks-Scrapers.py
