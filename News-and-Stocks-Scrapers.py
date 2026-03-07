@@ -148,9 +148,6 @@ def routine_report():
     send_telegram(msg)
 
 # ==========================================
-# 4. 轨道二：高频紧急预警 (新版 AI 调用)
-# ==========================================
-# ==========================================
 # 4. 轨道二：高频紧急预警 (全量数据库防重版)
 # ==========================================
 def emergency_monitor():
@@ -245,7 +242,7 @@ def twitter_vip_monitor(target_id="25073877", target_name="realDonaldTrump"):
 
     # 这里填入你在 RapidAPI Code Snippet 里看到的真实的 url 和参数
     # 以下为示范，请对照你的 Snippet 确认参数名叫什么（比如是 user 还是 id）
-    url = f"https://{rapidapi_host}/user/tweets" # <--- 注意替换成你真实的 URL
+    url = "https://twitter241.p.rapidapi.com/user-tweets" # <--- 注意替换成你真实的 URL
     querystring = {"user": target_id, "count": "20"} # 用我们刚才查到的纯数字 ID
     
     headers = {
@@ -311,24 +308,30 @@ def twitter_vip_monitor(target_id="25073877", target_name="realDonaldTrump"):
 
     except Exception as e:
         print(f"❌ Twitter 抓取或分析失败: {e}")
+        
 # ==========================================
 # 5. 云端智能调度中心
 # ==========================================
 if __name__ == "__main__":
-    print("🚀 云端智能雷达 (v3.1 架构分离版) 启动...")
+    print("🚀 云端智能雷达 (v4.0 领袖社交媒体版) 启动...")
     
-    # 无论谁唤醒，先静默扫描一遍有没有世界末日或熔断暴跌
-    emergency_monitor()
+    # 获取是谁打来的电话
+    event_type = os.environ.get('WEBHOOK_EVENT')
+    is_manual_trigger = os.environ.get('GITHUB_EVENT_NAME') == 'workflow_dispatch'
 
-    # 判断唤醒来源：是不是手动点击的，或者是 cron-job.org 打来的专线电话？
-    event_name = os.environ.get('GITHUB_EVENT_NAME')
-    is_vip_trigger = event_name in ['workflow_dispatch', 'repository_dispatch']
-
-    if is_vip_trigger:
-        print("👆 检测到 VIP 专线或手动触发，立即生成长篇情绪简报！")
+    if event_type == 'twitter-scan':
+        print("🦅 接到外部精准指令：立即执行 Twitter 领袖扫描！")
+        twitter_vip_monitor(target_id="25073877", target_name="realDonaldTrump")
+        
+    elif event_type == 'precision-strike' or is_manual_trigger:
+        print("👆 接到外部精准指令或手动触发：生成长篇市场简报！")
         routine_report()
+        
     else:
-        print("➖ 15分钟常规巡逻结束。未触发报警，系统静默待命。")
+        # 如果既不是查推特，也不是发报告，那这就是 GitHub 自己 15 分钟一次的闲逛
+        # 闲逛时，我们只做最安静的暴雷扫描
+        print("➖ 执行 15 分钟静默盘面扫描...")
+        emergency_monitor()
 
 
 
