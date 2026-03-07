@@ -6,7 +6,7 @@ on:
     - cron: '*/15 * * * *' # 保留原来的破闹钟作为备胎兜底
   workflow_dispatch:
   repository_dispatch: # 允许外部 Webhook 拿着暗号来敲门
-    types: [precision-strike] # 我们定一个专属暗号
+    types: [precision-strike, twitter-scan] # 我们定一个专属暗号
 
 jobs:
   run-radar:
@@ -32,5 +32,6 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           UPSTASH_REDIS_REST_URL: ${{ secrets.UPSTASH_REDIS_REST_URL }}
           UPSTASH_REDIS_REST_TOKEN: ${{ secrets.UPSTASH_REDIS_REST_TOKEN }}
+          WEBHOOK_EVENT: ${{ github.event.action }}
         # 注意：这里已经替换成了你实际上传的 Python 文件名
         run: python News-and-Stocks-Scrapers.py
