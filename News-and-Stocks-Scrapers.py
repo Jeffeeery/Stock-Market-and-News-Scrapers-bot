@@ -150,47 +150,70 @@ def routine_report():
 # ==========================================
 # 4. 轨道二：高频紧急预警 (新版 AI 调用)
 # ==========================================
+# ==========================================
+# 4. 轨道二：高频紧急预警 (全量数据库防重版)
+# ==========================================
 def emergency_monitor():
     print("\n🚨 正在执行紧急暴雷扫描...")
     alerts = []
     
+    # --- 1. 扫描盘面暴跌 (加装记忆拦截器) ---
     for symbol, name in TICKERS.items():
         try:
             hist = yf.Ticker(symbol).history(period="5d")
             if len(hist) >= 2:
                 current_price = hist['Close'].iloc[-1]
-                change_pct = ((current_price - hist['Close'].iloc[-2]) / hist['Close'].iloc[-2]) * 100
+                prev_close = hist['Close'].iloc[-2]
+                change_pct = ((current_price - prev_close) / prev_close) * 100
+                
+                # 提取最新交易日的日期，做成独一无二的盘面指纹
+                latest_date = hist.index[-1].strftime('%Y-%m-%d')
+                price_fingerprint = f"price_alert_{symbol}_{latest_date}"
+                
+                alert_msg = None
                 if symbol == '^VIX' and current_price > 35:
-                    alerts.append(f"🚨 <b>【极端恐慌】</b> VIX 突破 {current_price:.2f}！")
+                    alert_msg = f"🚨 <b>【极端恐慌】</b> VIX 突破 {current_price:.2f}！"
                 elif symbol == 'CL=F' and change_pct > 8.0:
-                    alerts.append(f"🛢️ <b>【原油暴涨】</b> 油价飙升 {change_pct:.2f}%！")
+                    alert_msg = f"🛢️ <b>【原油暴涨】</b> 油价飙升 {change_pct:.2f}%！"
+                elif symbol == 'MAGS' and change_pct < -5.0:
+                    alert_msg = f"📉 <b>【美股熔断级下跌】</b> 科技巨头暴跌 {change_pct:.2f}%！"
+                
+                # 如果触发了报警，先查数据库！拦截周六日的重复复读！
+                if alert_msg:
+                    if not check_and_mark_news_seen(price_fingerprint):
+                        alerts.append(alert_msg)
         except:
             pass
+            
     if alerts:
         send_telegram("\n".join(alerts))
 
-    url = "https://news.google.com/rss/search?q=US+Iran+conflict&hl=en-US&gl=US"
-    extreme_keywords = ["nuclear", "assassinated", "war", "strike", "missile"]
-    
-    for article in feedparser.parse(url).entries[:5]:
-        if any(kw in article.title.lower() for kw in extreme_keywords):
-            if check_and_mark_news_seen(article.link): continue
-            if not ai_client: continue
-            
-            prompt = f"判断该新闻是否陈述了真实的、已发生的、对全球有毁灭打击的事件。必须输出JSON: {{\"is_critical\": true/false, \"reason\": \"...\"}}。标题：{article.title}"
-            try:
-                # 【新版 SDK 调用方式】
-                resp = ai_client.models.generate_content(
-                    model='gemini-2.5-flash',
-                    contents=prompt,
-                    config=types.GenerateContentConfig(response_mime_type="application/json")
-                )
-                res = json.loads(resp.text)
-                if res.get("is_critical"):
-                    send_telegram(f"☢️ <b>【高信度战争预警】</b>\n{article.title}\n<a href='{article.link}'>阅读原文</a>")
-            except:
-                pass
-
+    # --- 2. 扫描突发核新闻 ---
+    try:
+        url = "https://news.google.com/rss/search?q=US+Iran+conflict&hl=en-US&gl=US"
+        extreme_keywords = ["nuclear", "assassinated", "war", "strike", "missile"]
+        
+        import feedparser # 确保作用域内有这个库
+        for article in feedparser.parse(url).entries[:5]:
+            if any(kw in article.title.lower() for kw in extreme_keywords):
+                if check_and_mark_news_seen(article.link): continue
+                if not ai_client: continue
+                
+                prompt = f"判断该新闻是否陈述了真实的、已发生的、对全球有毁灭打击的事件。必须输出JSON: {{\"is_critical\": true/false, \"reason\": \"...\"}}。标题：{article.title}"
+                try:
+                    resp = ai_client.models.generate_content(
+                        model='gemini-2.5-flash',
+                        contents=prompt,
+                        config=types.GenerateContentConfig(response_mime_type="application/json")
+                    )
+                    import json
+                    res = json.loads(resp.text)
+                    if res.get("is_critical"):
+                        send_telegram(f"☢️ <b>【高信度战争预警】</b>\n{article.title}\n<a href='{article.link}'>阅读原文</a>")
+                except:
+                    pass
+    except:
+        pass
 # ==========================================
 # 5. 云端智能调度中心
 # ==========================================
@@ -209,6 +232,7 @@ if __name__ == "__main__":
         routine_report()
     else:
         print("➖ 15分钟常规巡逻结束。未触发报警，系统静默待命。")
+
 
 
 
