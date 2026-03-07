@@ -214,6 +214,103 @@ def emergency_monitor():
                     pass
     except:
         pass
+
+# ==========================================
+# 6. 新增轨道：社交媒体 VIP 领袖情绪监控
+# ==========================================
+def extract_tweets_from_json(data):
+    """
+    智能递归提取器：无视复杂的 JSON 结构，强行抓取所有 'full_text'
+    """
+    texts = []
+    if isinstance(data, dict):
+        if 'full_text' in data:
+            texts.append(data['full_text'])
+        for key, value in data.items():
+            texts.extend(extract_tweets_from_json(value))
+    elif isinstance(data, list):
+        for item in data:
+            texts.extend(extract_tweets_from_json(item))
+    return texts
+
+def twitter_vip_monitor(target_id="25073877", target_name="realDonaldTrump"):
+    print(f"\n🦅 正在暗中扫描 X (Twitter) 领袖账号: @{target_name}")
+    
+    rapidapi_key = os.environ.get("RAPIDAPI_KEY") 
+    rapidapi_host = os.environ.get("RAPIDAPI_HOST")
+    
+    if not rapidapi_key or not rapidapi_host:
+        print("⚠️ 未配置 RapidAPI 密钥，跳过 Twitter 扫描。")
+        return
+
+    # 这里填入你在 RapidAPI Code Snippet 里看到的真实的 url 和参数
+    # 以下为示范，请对照你的 Snippet 确认参数名叫什么（比如是 user 还是 id）
+    url = f"https://{rapidapi_host}/user/tweets" # <--- 注意替换成你真实的 URL
+    querystring = {"user": target_id, "count": "20"} # 用我们刚才查到的纯数字 ID
+    
+    headers = {
+        "x-rapidapi-key": rapidapi_key,
+        "x-rapidapi-host": rapidapi_host
+    }
+
+    try:
+        response = requests.get(url, headers=headers, params=querystring)
+        raw_json = response.json()
+        
+        # 🚀 使用我们的智能提取器，把几万行的 JSON 浓缩成几句话！
+        all_tweets = extract_tweets_from_json(raw_json)
+        
+        # 过滤掉太短的废话，只保留前 3 条有价值的推文
+        valid_tweets = [t for t in all_tweets if len(t) > 20][:3]
+        
+        new_tweets = []
+        for tweet_text in valid_tweets:
+            # 【防重拦截】：把推文内容做成指纹存进 Upstash
+            if not check_and_mark_news_seen(tweet_text):
+                new_tweets.append(f"• {tweet_text}")
+
+        if not new_tweets:
+            print(f"➖ @{target_name} 过去几小时内无未读新发言。")
+            return
+
+        # 召唤 Gemini 首席宏观交易员进行情绪研判！
+        tweets_str = "\n\n".join(new_tweets)
+        msg = f"🦅 <b>【领袖情报拦截: @{target_name}】</b>\n\n{tweets_str}\n"
+        
+        if ai_client:
+            prompt = f"""
+            你是一位顶级的华尔街宏观交易员。以下是美国领袖或重要人物在 X 上的最新发言。
+            请评估这些发言对全球金融市场（特别是美股、加密货币、原油）的潜在影响。
+            必须严格输出 JSON 格式：
+            {{
+                "score": 填入 -100 到 100 的整数 (负代表恐慌/制裁/战争利空，正代表狂热/减税利好),
+                "target_asset": "最可能受此推文波动的资产(如：BTC, 原油, 美元, 无)",
+                "analysis": "用50字犀利解读这条推文的言外之意和潜在交易信号"
+            }}
+            推文内容：
+            {tweets_str}
+            """
+            
+            from google.genai import types
+            import json
+            resp = ai_client.models.generate_content(
+                model='gemini-2.5-flash',
+                contents=prompt,
+                config=types.GenerateContentConfig(response_mime_type="application/json")
+            )
+            ai_result = json.loads(resp.text)
+            
+            score = ai_result.get('score', 0)
+            emoji = "🥶" if score < -30 else ("🔥" if score > 30 else "🤔")
+            
+            msg += f"\n🧠 <b>AI 推文情绪解析</b>: {score} {emoji}\n"
+            msg += f"🎯 <b>异动雷达</b>: {ai_result.get('target_asset')}\n"
+            msg += f"💡 <b>深度解读</b>: {ai_result.get('analysis')}\n"
+            
+        send_telegram(msg)
+
+    except Exception as e:
+        print(f"❌ Twitter 抓取或分析失败: {e}")
 # ==========================================
 # 5. 云端智能调度中心
 # ==========================================
@@ -232,6 +329,7 @@ if __name__ == "__main__":
         routine_report()
     else:
         print("➖ 15分钟常规巡逻结束。未触发报警，系统静默待命。")
+
 
 
 
