@@ -393,7 +393,7 @@ def routine_report() -> None:
     articles = fetch_new_articles(CFG.rss_feeds, CFG.max_articles_per_feed)
 
     if not articles:
-        msg += "➖ 过去 4 小时内无未读重大资讯，情绪指标维持现状。\n"
+        msg += "➖ 过去 6 小时内无未读重大资讯，情绪指标维持现状。\n"
     else:
         news_display = "\n".join(
             f"<b>{a['category']}</b>: <a href='{a['link']}'>{a['title']}</a>"
@@ -692,3 +692,4 @@ if __name__ == "__main__":
     else:
         log.info("➖ 定时静默扫描（暴雷预警 v2）")
         emergency_monitor_v2()
+
