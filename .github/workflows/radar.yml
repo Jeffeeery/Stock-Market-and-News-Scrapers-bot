@@ -1,30 +1,34 @@
 name: Market Radar Bot
 
-# 触发条件
+# 防止并发运行导致 Telegram 重复推送和 Redis 去重竞态
+concurrency:
+  group: market-radar
+  cancel-in-progress: false
+
 on:
   schedule:
-    - cron: '*/15 * * * *' # 保留原来的破闹钟作为备胎兜底
+    - cron: '*/15 * * * *'
   workflow_dispatch:
-  repository_dispatch: # 允许外部 Webhook 拿着暗号来敲门
-    types: [precision-strike, twitter-scan] # 我们定一个专属暗号
+  repository_dispatch:
+    types: [precision-strike, twitter-scan]
 
 jobs:
   run-radar:
-    runs-on: ubuntu-latest 
-    
+    runs-on: ubuntu-latest
+
     steps:
       - name: 检出代码
-        uses: actions/checkout@v3
-        
+        uses: actions/checkout@v4
+
       - name: 配置 Python 环境
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-          
+          cache: 'pip'
+
       - name: 安装必需的库
-        run: |
-          pip install requests feedparser google-genai yfinance
-          
+        run: pip install -r requirements.txt
+
       - name: 运行主程序
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
@@ -35,5 +39,4 @@ jobs:
           WEBHOOK_EVENT: ${{ github.event.action }}
           RAPIDAPI_KEY: ${{ secrets.RAPIDAPI_KEY }}
           RAPIDAPI_HOST: ${{ secrets.RAPIDAPI_HOST }}
-        # 注意：这里已经替换成了你实际上传的 Python 文件名
         run: python News-and-Stocks-Scrapers.py
