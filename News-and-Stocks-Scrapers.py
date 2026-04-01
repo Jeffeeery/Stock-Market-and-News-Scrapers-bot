@@ -1,18 +1,20 @@
 """
-市场雷达 v5.1 — 安全加固版
-改进点：Upstash POST Body 防日志泄露、精细化异常捕获
+市场雷达 v5.2 — 代码质量优化版
+改进点：移除死代码、pandas 顶层导入、顶层异常捕获、dispatch 简化
 """
 
-import os
-import json
 import hashlib
+import json
 import logging
+import os
 import time
+import traceback
 from dataclasses import dataclass, field
 from typing import Optional
 
-import requests
 import feedparser
+import pandas as pd
+import requests
 import yfinance as yf
 from google import genai
 from google.genai import types
@@ -43,11 +45,6 @@ class Config:
     rapidapi_host: str = field(default_factory=lambda: os.environ.get("RAPIDAPI_HOST", ""))
 
     # 业务阈值 — 调参只需改这里
-    vix_panic_threshold: float = 35.0
-    oil_surge_pct: float = 8.0
-    tech_crash_pct: float = -5.0
-
-    # 系统参数
     news_ttl_seconds: int = 604800       # 7天去重窗口
     max_articles_per_feed: int = 3        # 每个 RSS 频道最多拉取条数
     max_tweets_per_account: int = 3       # 每个 Twitter 账号最多分析条数
@@ -78,22 +75,14 @@ class Config:
         ),
     })
 
-    # 核战/战争关键词
-    extreme_keywords: list = field(default_factory=lambda: [
-        "nuclear", "assassinated", "war", "strike", "missile"
-    ])
-
     # 各资产的静态熔断门槛（绝对涨跌幅，单位：小数）
-    # 设计意图：动态阈值在低波动资产上容易「过敏」（如黄金 0.1% 就触发）。
-    # 引入此静态地板：「统计异常」+「绝对幅度够大」同时成立才报警。
-    # 调参指南：波动性越高的资产，门槛越宽松。
     static_alert_floors: dict = field(default_factory=lambda: {
         "CL=F":    {"upper":  0.05, "lower": -0.05},  # 原油     ±5%
         "GC=F":    {"upper":  0.03, "lower": -0.03},  # 黄金     ±3%
         "SI=F":    {"upper":  0.04, "lower": -0.04},  # 白银     ±4%
         "MAGS":    {"upper":  0.04, "lower": -0.04},  # 科技     ±4%
         "BTC-USD": {"upper":  0.08, "lower": -0.08},  # 比特币   ±8%
-        "^VIX":    {"upper":  0.20, "lower": -0.15},  # 恐慌指数（非对称：暴涨比暴跌更危险）
+        "^VIX":    {"upper":  0.20, "lower": -0.15},  # 恐慌指数（非对称）
     })
     # 未在上表配置的资产兜底门槛
     static_alert_floor_default: dict = field(
@@ -158,27 +147,21 @@ def send_telegram(message: str) -> bool:
 # ==========================================
 # 4. Upstash 去重组件（职责单一：查 + 写分离）
 # ==========================================
-# 安全说明：使用 POST + JSON Body 而非 GET + URL 路径。
-# 原因：GET 请求的 URL（含 key）会出现在：
-#   ① Upstash 服务端访问日志  ② 中间代理/CDN 的请求日志
-#   ③ 本地系统的 shell history（如果通过 curl 调试）
-# POST Body 走 HTTPS 加密传输，不会被上述日志记录。
 def _upstash_exec(command: list) -> Optional[str]:
     """
     通过 POST Body 向 Upstash 执行一条 Redis 命令。
-    command 示例: ["GET", "mykey"]  /  ["SET", "mykey", "1", "EX", "604800"]
     成功返回 result 字段（字符串或 None），失败返回 None。
     """
     if not CFG.upstash_url or not CFG.upstash_token:
         return None
     try:
         r = requests.post(
-            CFG.upstash_url,                                  # POST 到根路径
+            CFG.upstash_url,
             headers={
                 "Authorization": f"Bearer {CFG.upstash_token}",
                 "Content-Type": "application/json",
             },
-            json=command,                                      # key 在 Body 里，不在 URL 里
+            json=command,
             timeout=CFG.request_timeout,
         )
         r.raise_for_status()
@@ -190,18 +173,15 @@ def _upstash_exec(command: list) -> Optional[str]:
     except requests.exceptions.HTTPError as e:
         log.debug(f"Upstash HTTP 错误 {e.response.status_code}: {e.response.text[:200]}")
     except (ValueError, KeyError) as e:
-        # ValueError: r.json() 解析失败；KeyError: 响应结构不符合预期
         log.debug(f"Upstash 响应解析失败: {e}")
     return None
 
 
 def _upstash_get(key: str) -> Optional[str]:
-    """从 Upstash 读取一个 key，失败返回 None。"""
     return _upstash_exec(["GET", key])
 
 
 def _upstash_set(key: str, ttl: int = CFG.news_ttl_seconds) -> None:
-    """向 Upstash 写入一个 key（带 TTL），失败静默降级。"""
     _upstash_exec(["SET", key, "1", "EX", str(ttl)])
 
 
@@ -215,7 +195,6 @@ def is_seen(raw_id: str) -> bool:
 
 
 def mark_seen(raw_id: str) -> None:
-    """将某条资讯标记为已推送。"""
     fingerprint = hashlib.md5(raw_id.encode()).hexdigest()
     _upstash_set(fingerprint)
 
@@ -224,15 +203,10 @@ def mark_seen(raw_id: str) -> None:
 # 5. 行情模块（批量拉取，避免逐个 HTTP）
 # ==========================================
 def fetch_market_snapshot() -> dict[str, dict]:
-    """
-    批量下载所有 ticker 的近 5 日行情。
-    返回: {symbol: {"name": str, "price": float, "change_pct": float}}
-    """
     symbols = list(CFG.tickers.keys())
     snapshot: dict[str, dict] = {}
 
     try:
-        # 一次 HTTP 请求拉取所有 ticker，而非 N 次循环
         raw = yf.download(symbols, period="5d", auto_adjust=True, progress=False)
         close = raw["Close"]
 
@@ -249,20 +223,15 @@ def fetch_market_snapshot() -> dict[str, dict]:
                     "latest_date": series.index[-1].strftime("%Y-%m-%d"),
                 }
             except KeyError:
-                # yfinance 对某个 symbol 没有返回数据列
                 log.warning(f"行情数据中找不到 {symbol}，可能是非交易日或 symbol 已下架。")
             except (IndexError, ZeroDivisionError) as e:
-                # iloc 越界 或 prev_close 为零（极罕见的数据质量问题）
                 log.warning(f"解析 {symbol} 行情计算异常: {e}")
             except ValueError as e:
-                # float() 转换失败，说明数据不是数值型
                 log.warning(f"{symbol} 行情值无法转为浮点数: {e}")
 
     except requests.exceptions.RequestException as e:
-        # yfinance 底层使用 requests，网络层错误从这里冒出
         log.error(f"行情网络请求失败: {e}")
     except KeyError:
-        # raw["Close"] 不存在，说明 yfinance 返回了空 DataFrame
         log.error("yfinance 返回数据中不含 'Close' 列，可能所有 symbol 均无效。")
 
     return snapshot
@@ -283,10 +252,6 @@ def format_market_snapshot(snapshot: dict) -> str:
 # 6. 新闻模块
 # ==========================================
 def fetch_new_articles(feeds: dict, max_per_feed: int) -> list[dict]:
-    """
-    从多个 RSS 频道拉取未读文章。
-    返回: [{"category": str, "title": str, "link": str}]
-    """
     results = []
     for category, url in feeds.items():
         try:
@@ -304,10 +269,8 @@ def fetch_new_articles(feeds: dict, max_per_feed: int) -> list[dict]:
                     })
                     count += 1
         except AttributeError as e:
-            # article 对象缺少 .link 或 .title 属性（feed 结构异常）
             log.warning(f"RSS 文章字段缺失 [{category}]: {e}")
         except requests.exceptions.RequestException as e:
-            # feedparser 内部也用 urllib，但部分异常会以 requests 形式冒出
             log.warning(f"RSS 网络请求失败 [{category}]: {e}")
     return results
 
@@ -316,10 +279,6 @@ def fetch_new_articles(feeds: dict, max_per_feed: int) -> list[dict]:
 # 7. JSON 安全递归提取（带深度限制，防爆栈）
 # ==========================================
 def extract_text_fields(data, key: str = "full_text", _depth: int = 0) -> list[str]:
-    """
-    递归提取 JSON 中所有指定 key 的值。
-    _depth 限制递归深度，防止超深结构导致栈溢出。
-    """
     if _depth > CFG.recursion_depth_limit:
         return []
     results = []
@@ -349,12 +308,6 @@ PROMPT_NEWS_SENTIMENT = """
 
 新闻标题：
 {headlines}
-"""
-
-PROMPT_IS_CRITICAL = """
-判断该新闻是否陈述了真实的、已发生的、对全球有毁灭打击的事件。
-必须输出JSON: {{"is_critical": true/false, "reason": "..."}}}。
-标题：{title}
 """
 
 PROMPT_TWEET_SENTIMENT = """
@@ -413,11 +366,9 @@ def routine_report() -> None:
                     f"💡 <b>核心研判</b>: {result.get('analysis')}\n"
                 )
             except json.JSONDecodeError as e:
-                # Gemini 没有严格返回 JSON（极少见，但 prompt 失控时会发生）
                 log.error(f"AI 返回内容无法解析为 JSON: {e}")
                 msg += "⚠️ AI 返回格式异常，分析跳过。\n"
             except requests.exceptions.RequestException as e:
-                # Gemini SDK 底层网络失败
                 log.error(f"AI 网络请求失败: {e}")
                 msg += "⚠️ AI 服务暂时不可用。\n"
 
@@ -429,15 +380,10 @@ def routine_report() -> None:
 # ==========================================
 def emergency_monitor_v2() -> None:
     """
-    动态统计级暴雷扫描（替代基于固定阈值的 emergency_monitor）。
-
-    核心升级：
-      - 每个资产使用自身 30 天历史数据自动校准「正常波动区间」
-      - 双重门槛过滤：统计异常 + 绝对幅度，缺一不可
-      - Bug 修复：涨跌幅显示从小数正确格式化为百分比
+    动态统计级暴雷扫描。
+    双重门槛过滤：统计异常 + 绝对幅度，缺一不可。
     """
     log.info("🚨 执行【动态统计级双重校验】暴雷扫描...")
-    ai = get_ai_client()
     symbols = list(CFG.tickers.keys())
 
     try:
@@ -470,23 +416,20 @@ def emergency_monitor_v2() -> None:
         if last_price == 0:
             continue
 
-        current_change = (current_price - last_price) / last_price  # 小数，如 0.05 = 5%
+        current_change = (current_price - last_price) / last_price
 
-        # --- 第一步：计算动态阈值 ---
         dynamic_upper, dynamic_lower = calculate_dynamic_threshold(data, multiplier=2.5)
         if dynamic_upper is None:
             continue
 
-        # --- 第二步：双重校验 ---
         should_alert, direction = _dual_validate(
             symbol, current_change, dynamic_upper, dynamic_lower
         )
         if not should_alert:
             continue
 
-        # --- 第三步：构造报警消息（修复 Bug：乘以 100 转为百分比显示）---
         name = CFG.tickers[symbol]
-        change_display = current_change * 100   # 0.05 → 5.0
+        change_display = current_change * 100
         if direction == "up":
             alert_msg = (
                 f"🚀 <b>【{name}】异常超涨</b>: {change_display:+.2f}%"
@@ -500,7 +443,6 @@ def emergency_monitor_v2() -> None:
                 f"静态门槛 {CFG.static_alert_floors.get(symbol, CFG.static_alert_floor_default)['lower'] * 100:.1f}%）"
             )
 
-        # --- 第四步：去重 ---
         fingerprint = f"dynamic_alert_{symbol}_{time.strftime('%Y%m%d')}"
         if not is_seen(fingerprint):
             mark_seen(fingerprint)
@@ -510,6 +452,7 @@ def emergency_monitor_v2() -> None:
         send_telegram("\n".join(alerts))
     else:
         log.info("➖ 所有资产均在双重门槛内，无需报警。")
+
 
 # ==========================================
 # 11. 轨道三：VIP 领袖 Twitter 监控
@@ -542,7 +485,7 @@ def twitter_vip_monitor(target_id: str = "25073877", target_name: str = "realDon
     valid_texts = [t for t in all_texts if len(t) >= CFG.min_tweet_length]
 
     new_tweets: list[str] = []
-    for text in valid_texts[: CFG.max_tweets_per_account * 3]:  # 多看几条以凑满配额
+    for text in valid_texts[: CFG.max_tweets_per_account * 3]:
         if len(new_tweets) >= CFG.max_tweets_per_account:
             break
         if not is_seen(text):
@@ -576,23 +519,13 @@ def twitter_vip_monitor(target_id: str = "25073877", target_name: str = "realDon
 # ==========================================
 # 12. 动态阈值引擎（双重校验版）
 # ==========================================
-
 def calculate_dynamic_threshold(
-    series: "pd.Series", multiplier: float = 3.0
+    series: pd.Series, multiplier: float = 3.0
 ) -> tuple[float, float] | tuple[None, None]:
     """
     计算动态统计阈值：mean ± k * std（基于历史日收益率分布）。
-
-    返回 (upper, lower) 均为小数形式的收益率（与 pct_change() 单位一致）。
-    样本不足 10 时返回 (None, None)，由调用方降级处理。
-
-    multiplier 选择建议：
-      2.0 → 覆盖正态分布 95.4% 的波动，灵敏度高，适合高频监控
-      2.5 → 覆盖 98.8%，均衡选择
-      3.0 → 覆盖 99.7%，只响应极端尾部事件
+    返回 (upper, lower)，样本不足 10 时返回 (None, None)。
     """
-    import pandas as pd
-
     if len(series) < 10:
         return None, None
 
@@ -600,22 +533,13 @@ def calculate_dynamic_threshold(
     mean = returns.mean()
     std = returns.std()
 
-    if std == 0:          # 极罕见：资产价格完全没动（停牌等）
+    if std == 0:
         return None, None
 
     return mean + (multiplier * std), mean - (multiplier * std)
 
 
 def _passes_static_floor(symbol: str, change: float) -> tuple[bool, str]:
-    """
-    静态熔断门槛校验。
-
-    返回 (passed, direction)，其中 direction 是 "up" / "down" / ""。
-    只有绝对涨跌幅超过该资产的静态最低门槛，才算通过。
-
-    设计意图：防止动态阈值在极低波动资产（如黄金连续平静期）上
-    把 0.1% 的微小波动误判为「统计异常」。
-    """
     floors = CFG.static_alert_floors.get(symbol, CFG.static_alert_floor_default)
     if change > floors["upper"]:
         return True, "up"
@@ -632,28 +556,14 @@ def _dual_validate(
 ) -> tuple[bool, str]:
     """
     双重校验：动态统计异常 AND 静态熔断门槛，两者必须同时成立。
-
-    逻辑矩阵：
-    ┌──────────────────┬────────────────────┬────────┐
-    │  动态阈值被突破？ │  静态门槛被突破？  │  报警？│
-    ├──────────────────┼────────────────────┼────────┤
-    │       ✅         │        ✅          │   ✅   │  ← 真正的异常
-    │       ✅         │        ❌          │   ❌   │  ← 统计异常但幅度太小（过敏）
-    │       ❌         │        ✅          │   ❌   │  ← 幅度大但属于该资产正常波动
-    │       ❌         │        ❌          │   ❌   │  ← 正常
-    └──────────────────┴────────────────────┴────────┘
-
-    返回 (should_alert, direction)。
     """
-    # 第一关：动态统计异常
     if current_change > dynamic_upper:
         dynamic_direction = "up"
     elif current_change < dynamic_lower:
         dynamic_direction = "down"
     else:
-        return False, ""          # 未突破动态阈值，直接放行
+        return False, ""
 
-    # 第二关：静态绝对门槛
     static_passed, static_direction = _passes_static_floor(symbol, current_change)
     if not static_passed:
         log.debug(
@@ -662,34 +572,37 @@ def _dual_validate(
         )
         return False, ""
 
-    # 方向一致性校验（极端情况下两者方向不同，说明配置有问题）
     if dynamic_direction != static_direction:
         log.warning(f"{symbol} 动态与静态方向不一致，跳过。")
         return False, ""
 
     return True, dynamic_direction
 
+
 # ==========================================
 # 13. 云端调度中心
 # ==========================================
 DISPATCH_MAP = {
-    "twitter-scan":    lambda: twitter_vip_monitor(),
-    "precision-strike": lambda: routine_report(),
+    "twitter-scan":     twitter_vip_monitor,
+    "precision-strike": routine_report,
 }
 
 if __name__ == "__main__":
-    log.info("🚀 云端智能雷达 v5.1 启动")
+    log.info("🚀 云端智能雷达 v5.2 启动")
 
     event_type = os.environ.get("WEBHOOK_EVENT", "")
-    is_manual = os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch"
+    is_manual  = os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch"
 
-    if event_type in DISPATCH_MAP:
-        log.info(f"📡 接收到事件: {event_type}")
-        DISPATCH_MAP[event_type]()
-    elif is_manual:
-        log.info("👆 手动触发：生成长篇市场简报")
-        routine_report()
-    else:
-        log.info("➖ 定时静默扫描（暴雷预警 v2）")
-        emergency_monitor_v2()
-
+    try:
+        if event_type in DISPATCH_MAP:
+            log.info(f"📡 接收到事件: {event_type}")
+            DISPATCH_MAP[event_type]()
+        elif is_manual:
+            log.info("👆 手动触发：生成长篇市场简报")
+            routine_report()
+        else:
+            log.info("➖ 定时静默扫描（暴雷预警 v2）")
+            emergency_monitor_v2()
+    except Exception as e:
+        log.error("未捕获异常:\n%s", traceback.format_exc())
+        send_telegram(f"⚠️ <b>市场雷达异常崩溃</b>\n<code>{str(e)[:200]}</code>")
